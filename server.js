@@ -17,89 +17,78 @@ const AWSALB_FIXO    = "NVrK670Kruqv5XQ7P8LWy2HLv1PbD2G47s8tGkjo6/oGReO0SNWCadN2
 
 // ─── COOKIE ──────────────────────────────────────────────────────────────────
 function lerCookie() {
-  try {
-    if (fs.existsSync(COOKIE_FILE)) return fs.readFileSync(COOKIE_FILE, "utf8").trim();
-  } catch (_) {}
+  try { if (fs.existsSync(COOKIE_FILE)) return fs.readFileSync(COOKIE_FILE,"utf8").trim(); } catch(_) {}
   return `PHPSESSID=; AWSALB=${AWSALB_FIXO}; AWSALBCORS=${AWSALB_FIXO}`;
 }
-
 function salvarCookie(raw) {
-  let cookie = raw.trim();
-  if (!cookie.includes("AWSALB=")) cookie += `; AWSALB=${AWSALB_FIXO}; AWSALBCORS=${AWSALB_FIXO}`;
-  fs.writeFileSync(COOKIE_FILE, cookie, "utf8");
+  let c = raw.trim();
+  if (!c.includes("AWSALB=")) c += `; AWSALB=${AWSALB_FIXO}; AWSALBCORS=${AWSALB_FIXO}`;
+  fs.writeFileSync(COOKIE_FILE, c, "utf8");
   console.log("[painel] Cookie salvo.");
 }
 
 // ─── CACHE ───────────────────────────────────────────────────────────────────
 let _cache = { ts: 0, data: null };
-const CACHE_TTL = 5 * 60 * 1000; // 5 min
-
+const CACHE_TTL = 5 * 60 * 1000;
 function invalidarCache() { _cache.ts = 0; }
 
-// ─── TIPO DE CARGA (derivado do destino) ─────────────────────────────────────
+// ─── TIPO DE CARGA ───────────────────────────────────────────────────────────
 function inferirTipoCarga(destino = "") {
   const d = destino.toUpperCase();
-  if (d.includes("FOOD") || d.includes("FS ") || d.includes(" FS") || d === "FS") return "FS";
+  if (d.includes("FOOD") || d.includes(" FS") || d.includes("FS ") || d === "FS") return "FS";
   if (d.includes("VAREJO") || d.includes("DONANA")) return "VAREJO";
   return "MISTA";
 }
 
-// ─── VALE DO AÇO detection ───────────────────────────────────────────────────
-const VALE_ACO_KEYWORDS = [
+// ─── VALE DO AÇO ─────────────────────────────────────────────────────────────
+const VALE_ACO_KW = [
   "IPATINGA","TIMOTEO","TIMÓTEO","CIDADE NOBRE","CID.NOBRE","CID. NOBRE",
-  "PARAISO","PARAÍSO","BRAUNAS","BRAUNÃS","CORREGO NOVO","CÓRREGO NOVO",
-  "C.NOVO","DUVALE","GARCIA","CONSUL","BAKERY","BELO ORIENTE","B.ORIENTE",
+  "PARAISO","PARAÍSO","BRAUNAS","CORREGO NOVO","CÓRREGO NOVO","C.NOVO",
+  "DUVALE","GARCIA","CONSUL","BAKERY","BELO ORIENTE","B.ORIENTE",
   "PADARIA","LUIBAT","MOREIRA","IPABA","IAPU","RIBEIRO","PAMIL","TRINDAD",
 ];
-
 function isValeAco(destino = "") {
-  const d = destino.toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  return VALE_ACO_KEYWORDS.some(k => {
-    const kn = k.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-    return d.includes(kn);
-  });
+  const d = destino.toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  return VALE_ACO_KW.some(k => d.includes(k.normalize("NFD").replace(/[\u0300-\u036f]/g,"")));
+}
+
+// ─── PARSE ───────────────────────────────────────────────────────────────────
+function parseDateTime(str = "") {
+  if (!str) return null;
+  const m = str.match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})/);
+  if (!m) return null;
+  return new Date(`${m[3]}-${m[2]}-${m[1]}T${m[4]}:${m[5]}:00-03:00`);
+}
+function parseIso(str = "") {
+  if (!str) return null;
+  const m = str.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+  if (!m) return null;
+  return `${m[3]}-${m[2]}-${m[1]}`;
 }
 
 // ─── FETCH FUSION ─────────────────────────────────────────────────────────────
 async function fusionPost(endpoint, body = {}) {
-  const cookie = lerCookie();
   const url = `${FUSION_BASE}/php/track/${endpoint}`;
-  const form = new URLSearchParams(body).toString();
   const resp = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
-      "Cookie": cookie,
+      "Cookie": lerCookie(),
       "Referer": `${FUSION_BASE}/html/menus/main.php`,
       "User-Agent": "Mozilla/5.0",
     },
-    body: form,
+    body: new URLSearchParams(body).toString(),
     timeout: 15000,
   });
   const text = await resp.text();
-  if (text.includes("login") || text.includes("sessao_expirada") || text.includes("SESSAO_EXPIRADA")) {
-    throw new Error("SESSAO_EXPIRADA");
-  }
+  if (text.includes("SESSAO_EXPIRADA") || text.includes("sessao_expirada")) throw new Error("SESSAO_EXPIRADA");
   return text;
 }
 
-// ─── CARGAS EM CURSO ─────────────────────────────────────────────────────────
-async function getCargasEmCurso() {
-  const raw = await fusionPost(
-    "monitoraentregas/monitoramento_entregas_v2.php",
-    { usuario: FUSION_USUARIO, senha: FUSION_SENHA }
-  );
-  let parsed;
-  try { parsed = JSON.parse(raw); } catch { parsed = []; }
-  const lista = Array.isArray(parsed) ? parsed : (parsed?.dados || parsed?.data || []);
-  return lista;
-}
-
-// ─── GESTÃO DE CARGAS (terminoDt, destino, km) ───────────────────────────────
+// ─── GESTÃO DE CARGAS ────────────────────────────────────────────────────────
 async function getGestaoCargas() {
   const raw = await fusionPost(
-    "gestaoromaneio/get_romaneios.php?allStatus=true&acessar_tabela_log=1&tela=3.1",
-    {}
+    "gestaoromaneio/get_romaneios.php?allStatus=true&acessar_tabela_log=1&tela=3.1", {}
   );
   let rows = [];
   try {
@@ -107,105 +96,74 @@ async function getGestaoCargas() {
     rows = Array.isArray(p) ? p : (p?.dados || p?.data || []);
   } catch { rows = []; }
 
-  const mapa = {};
-  for (const r of rows) {
-    const erp = String(r.t10_carga_erp || r.carga_erp || r.erp || "").trim();
-    if (!erp || erp === "0") continue;
-
-    const termStr = String(r.t10_data_prevista_termino || r.dt_termino_previsto || "").trim();
-    const termDt  = termStr ? parseDateTime(termStr) : null;
-    const destino = String(r.t10_destino || r.destino || "").trim();
-    const km      = parseFloat(r.t10_km_previsto || r.km_previsto || 0) || null;
-
-    mapa[erp] = { terminoDt: termDt, terminoStr: termStr, destino, kmPrevisto: km };
+  if (rows.length > 0) {
+    console.log(`[gestao] ${rows.length} rows | campos: ${Object.keys(rows[0]).join(", ")}`);
+  } else {
+    console.log("[gestao] ZERO rows — verifique cookie");
   }
-  return mapa;
+  return rows;
 }
 
-// ─── PARSE DATETIME ──────────────────────────────────────────────────────────
-function parseDateTime(str = "") {
-  const m = str.match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})/);
-  if (!m) return null;
-  return new Date(`${m[3]}-${m[2]}-${m[1]}T${m[4]}:${m[5]}:00-03:00`);
-}
-
-// ─── MONTA PAYLOAD PRINCIPAL ─────────────────────────────────────────────────
+// ─── MONTA ESCALA ─────────────────────────────────────────────────────────────
 async function montarEscala() {
   if (_cache.data && Date.now() - _cache.ts < CACHE_TTL) return _cache.data;
 
-  const [listaRaw, gestaoMap] = await Promise.all([
-    getCargasEmCurso(),
-    getGestaoCargas(),
-  ]);
+  const rows = await getGestaoCargas();
 
-  // Normaliza campos do monitoramento
-  const emCurso = listaRaw.filter(r => {
-    const sit = String(r.situacao || r.status || "").toLowerCase();
-    return sit.includes("curso") || sit.includes("em curso");
-  });
+  // TODAS as cargas — sem filtro de situação
+  const cargas = rows.map(r => {
+    const erp      = String(r.t10_carga_erp  || r.carga_erp  || "").trim();
+    const destino  = String(r.t10_destino     || r.destino    || "").trim() || "--";
+    const motorista= String(r.t10_motorista   || r.motorista  || "").trim() || "--";
+    const placa    = String(r.t10_placa       || r.placa      || "").trim() || "--";
+    const ajudante = String(r.t10_ajudante    || r.ajudante   || "").trim() || null;
+    const situacao = String(r.t10_situacao    || r.situacao   || r.status   || "").trim();
 
-  const cargas = emCurso.map(c => {
-    // ERP
-    const idErpRaw = String(c.id_erp || c.idErp || c.carga_erp || "").trim();
-    const erp = /^1[0-9]\d{5}$/.test(idErpRaw) ? idErpRaw : "";
+    // ── DATA DE SAÍDA: prevista por padrão, real quando existir ──────────────
+    const saidaRealStr     = String(r.t10_data_largada        || r.data_largada        || "").trim();
+    const saidaPrevistaStr = String(r.t10_data_prevista_saida || r.data_prevista_saida || "").trim();
+    const saidaEhPrevista  = !saidaRealStr && !!saidaPrevistaStr;
+    const dataSaida        = parseIso(saidaRealStr || saidaPrevistaStr);
 
-    // Dados da gestão
-    const g = gestaoMap[erp] || {};
-
-    // Destino (prefere gestão)
-    const destino = g.destino || String(c.destino || c.rota || "").trim() || "--";
-
-    // Tipo de carga e Vale do Aço
-    const valeAco   = isValeAco(destino);
-    const tipoCarga = inferirTipoCarga(destino);
-
-    // Placa / Motorista
-    let placa = "", motorista = "";
-    const largadaRaw = String(c.largada || c.dados_gerais || c.motorista_placa || "").trim();
-    const placaM = largadaRaw.match(/\b([A-Z]{3}\d[A-Z0-9]\d{2}|[A-Z]{3}\d{4})\b/i);
-    if (placaM) placa = placaM[1].toUpperCase();
-    motorista = String(c.motorista || c.nome_motorista || "").trim() || largadaRaw.split(/[-|]/)[0].trim();
-
-    // Entregas
-    const totalEntregas = parseInt(c.total_entregas || c.totalEntregas || c.qtd_entregas || 0);
-    const entregues     = parseInt(c.entregues || c.entregas_realizadas || 0);
-    const pct           = totalEntregas > 0 ? Math.round((entregues / totalEntregas) * 100) : 0;
-
-    // Datas
-    let dataSaida = null;
-    const largStr = String(c.data_largada || c.dataLargada || c.dt_saida || "").trim();
-    const dsM = largStr.match(/(\d{2})\/(\d{2})\/(\d{4})/);
-    if (dsM) dataSaida = `${dsM[3]}-${dsM[2]}-${dsM[1]}`;
-
+    // ── PREVISÃO DE RETORNO ───────────────────────────────────────────────────
+    const termDt = parseDateTime(String(r.t10_data_prevista_termino || r.dt_termino_previsto || "").trim());
     let prevRetorno = null, horaRetorno = 14;
-    if (g.terminoDt) {
-      prevRetorno = g.terminoDt.toISOString().slice(0, 10);
-      horaRetorno = g.terminoDt.getHours() - 3; // UTC-3
-      if (horaRetorno < 0) horaRetorno += 24;
+    if (termDt) {
+      prevRetorno = termDt.toISOString().slice(0,10);
+      horaRetorno = (termDt.getUTCHours() - 3 + 24) % 24;
     }
 
+    // ── QUANTIDADES ───────────────────────────────────────────────────────────
+    const totalEntregas = parseInt(r.t10_qtd_entregas || r.qtd_entregas || r.total_entregas || 0) || 0;
+    const entregues     = parseInt(r.t10_entregues    || r.entregues    || r.entregas_ok    || 0) || 0;
+    const devolvidos    = parseInt(r.t10_devolvidos   || r.devolvidos   || 0) || 0;
+    const pct           = totalEntregas > 0 ? Math.round((entregues/totalEntregas)*100) : 0;
+
     return {
-      tipoCarga,
-      tipoVeiculo: String(c.tipo_veiculo || c.tipoVeiculo || c.veiculo || "").trim() || null,
-      carga:        erp || String(c.id_romaneio || c.idRomaneio || c.romaneio || "--").trim(),
+      tipoCarga:      inferirTipoCarga(destino),
+      tipoVeiculo:    String(r.t10_tipo_veiculo || r.tipo_veiculo || r.veiculo || "").trim() || null,
+      carga:          erp || String(r.t10_id_romaneio || r.id_romaneio || "--").trim(),
+      situacao,
       destino,
       placa,
       motorista,
-      ajudante:     String(c.ajudante || c.nome_ajudante || "").trim() || null,
-      peso:         parseFloat(c.peso_total || c.peso || 0) || null,
-      valorCarga:   parseFloat(c.valor_total || c.valor || 0) || null,
-      qtdEntregas:  totalEntregas,
+      ajudante:       ajudante || null,
+      peso:           parseFloat(r.t10_peso_total  || r.peso_total  || r.peso  || 0) || null,
+      valorCarga:     parseFloat(r.t10_valor_total || r.valor_total || r.valor || 0) || null,
+      qtdEntregas:    totalEntregas,
       entregues,
+      devolvidos,
       pct,
       dataSaida,
+      saidaEhPrevista,
       prevRetorno,
       horaRetorno,
-      distancia:    g.kmPrevisto || parseFloat(c.km_previsto || c.distancia || 0) || null,
-      valeAco,
-      situacao:     "Em Curso",
+      distancia:      parseFloat(r.t10_km_previsto || r.km_previsto || 0) || null,
+      valeAco:        isValeAco(destino),
     };
-  });
+  }).filter(c => c.carga !== "--"); // remove linhas sem ERP
 
+  console.log(`[escala] ${cargas.length} cargas montadas`);
   _cache = { ts: Date.now(), data: cargas };
   return cargas;
 }
@@ -213,69 +171,60 @@ async function montarEscala() {
 // ─── MIDDLEWARE ───────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(path.join(__dirname, ".")));
 
 // ─── ROTAS ───────────────────────────────────────────────────────────────────
-
 app.get("/api/status", (_req, res) => {
-  const temCookie = fs.existsSync(COOKIE_FILE) && lerCookie().includes("PHPSESSID=") && !lerCookie().includes("PHPSESSID=;");
-  res.json({ ok: true, sessaoAtiva: temCookie, ts: new Date().toISOString(), cacheTs: new Date(_cache.ts).toISOString() });
+  const c = lerCookie();
+  res.json({ ok:true, sessaoAtiva: c.includes("PHPSESSID=") && !c.includes("PHPSESSID=;"), ts: new Date().toISOString(), cacheTs: new Date(_cache.ts).toISOString() });
 });
 
-// Admin: verifica senha
 app.post("/api/admin/auth", (req, res) => {
   const { password } = req.body || {};
   if (password === ADMIN_PASSWORD) res.json({ ok: true });
   else res.status(401).json({ ok: false, error: "Senha incorreta." });
 });
 
-// Admin: salva cookie
 app.post("/api/admin/cookie", (req, res) => {
   const { password, cookie } = req.body || {};
-  if (password !== ADMIN_PASSWORD) return res.status(401).json({ ok: false, error: "Não autorizado." });
-  if (!cookie || !cookie.includes("PHPSESSID")) return res.status(400).json({ ok: false, error: "Cookie inválido." });
-  salvarCookie(cookie);
-  invalidarCache();
-  res.json({ ok: true, msg: "Cookie salvo com sucesso." });
+  if (password !== ADMIN_PASSWORD) return res.status(401).json({ ok:false, error:"Não autorizado." });
+  if (!cookie || !cookie.includes("PHPSESSID")) return res.status(400).json({ ok:false, error:"Cookie inválido." });
+  salvarCookie(cookie); invalidarCache();
+  res.json({ ok:true, msg:"Cookie salvo com sucesso." });
 });
 
-// Admin: força atualização
 app.post("/api/admin/refresh", async (req, res) => {
   const { password } = req.body || {};
-  if (password !== ADMIN_PASSWORD) return res.status(401).json({ ok: false, error: "Não autorizado." });
+  if (password !== ADMIN_PASSWORD) return res.status(401).json({ ok:false, error:"Não autorizado." });
   invalidarCache();
   try {
     const cargas = await montarEscala();
-    res.json({ ok: true, total: cargas.length, msg: `Cache atualizado — ${cargas.length} cargas carregadas.` });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
+    res.json({ ok:true, total:cargas.length, msg:`${cargas.length} cargas carregadas.` });
+  } catch (err) { res.status(500).json({ ok:false, error:err.message }); }
 });
 
-// Dashboard: cargas
+app.post("/api/admin/debug", async (req, res) => {
+  const { password } = req.body || {};
+  if (password !== ADMIN_PASSWORD) return res.status(401).json({ ok:false, error:"Não autorizado." });
+  try {
+    const rows = await getGestaoCargas();
+    res.json({ ok:true, total:rows.length, campos: rows[0] ? Object.keys(rows[0]) : [], amostra: rows.slice(0,2) });
+  } catch (err) { res.status(500).json({ ok:false, error:err.message }); }
+});
+
 app.get("/api/escala", async (_req, res) => {
   try {
     const cargas = await montarEscala();
-    res.json({ ok: true, geradoEm: new Date().toISOString(), total: cargas.length, cargas });
+    res.json({ ok:true, geradoEm:new Date().toISOString(), total:cargas.length, cargas });
   } catch (err) {
-    console.error("[painel] /api/escala:", err.message);
-    const sessao = err.message.includes("SESSAO") ? "SESSAO_EXPIRADA" : err.message;
-    res.status(500).json({ ok: false, error: sessao });
+    res.status(500).json({ ok:false, error: err.message.includes("SESSAO") ? "SESSAO_EXPIRADA" : err.message });
   }
 });
 
-// ─── KEEPALIVE: pinga Fusion a cada 18min ─────────────────────────────────────
+// ─── KEEPALIVE ────────────────────────────────────────────────────────────────
 setInterval(async () => {
-  try {
-    await getCargasEmCurso();
-    console.log("[keepalive] Fusion OK —", new Date().toLocaleTimeString("pt-BR"));
-  } catch (e) {
-    console.log("[keepalive] falhou:", e.message?.slice(0, 60));
-  }
+  try { await getGestaoCargas(); console.log("[keepalive] OK —", new Date().toLocaleTimeString("pt-BR")); }
+  catch (e) { console.log("[keepalive] falhou:", e.message?.slice(0,60)); }
 }, 18 * 60 * 1000);
 
-// ─── START ────────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`[Cercal Painel] rodando na porta ${PORT}`);
-  console.log(`[Cercal Painel] Admin: /admin.html | Senha: ${ADMIN_PASSWORD}`);
-});
+app.listen(PORT, () => console.log(`[Cercal Painel] porta ${PORT}`));
